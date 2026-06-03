@@ -24,7 +24,7 @@ from src.config import (
     TEST_PRED_DIR,
     set_global_seed,
 )
-from src.cv import make_kfolds, r2_score_np
+from src.cv import make_groupkfold_by_day, make_time_based_folds, r2_score_np
 from src.feature_engineering import FeatureBuilder
 from src.models import CatBoostWrapper, get_default
 from src.utils import get_logger
@@ -257,10 +257,17 @@ def run_training(
     n_folds: int = N_FOLDS,
     seed: int = SEED,
     n_optuna_trials: int = 20,
+    validation_mode: str = "time",
 ) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame, dict[str, pd.Series]]:
     """Train CatBoost only and return the model artefacts."""
     set_global_seed(seed)
-    folds = make_kfolds(len(train), n_folds=n_folds, seed=seed)
+    if validation_mode == "groupkfold":
+        folds = make_groupkfold_by_day(train, n_folds=n_folds)
+    elif validation_mode == "time":
+        folds = make_time_based_folds(train, n_folds=n_folds)
+    else:
+        raise ValueError(f"Unknown validation mode: {validation_mode}")
+
     train_feat, target_enc = feature_builder.fit_transform(train, folds)
     test_feat = feature_builder.transform(test, target_enc=target_enc)
 
@@ -315,6 +322,7 @@ def run_training(
         "mean_r2": mean,
         "std_r2": float(np.std(fold_scores)),
         "study_trials": len(study.trials),
+        "validation_mode": validation_mode,
     }
     return result, train_feat, test_feat, target_enc
 

@@ -20,6 +20,8 @@ def build_report(
         "This report summarises the single-model pipeline used to predict the "
         "`demand` column. Validation scores are 5-fold out-of-fold (OOF) R².\n"
     )
+    if "validation_mode" in train_result:
+        lines.append(f"- Validation mode: **{train_result['validation_mode']}**\n")
 
     lines.append("## 1. Final model summary\n")
     lines.append(f"- Final OOF R²: **{train_result['final_oof_r2']:.5f}**")
@@ -41,7 +43,7 @@ def build_report(
     lines.append(
         "The retained feature set includes timestamp-derived cyclical features, "
         "geohash prefix hierarchy, geohash latitude/longitude decoding, "
-        "geohash statistics, per-(geohash, hour) statistics, day-48 lookup features, "
+        "fold-safe geohash statistics, fold-safe per-(geohash, hour) statistics, "
         "interaction features, and out-of-fold target encoding for geohash and the "
         "other high-signal categorical fields.\n"
     )

@@ -10,12 +10,10 @@ The features fall into the following groups:
 * Cyclical time encodings for the ``timestamp`` column.
 * Spatial features from geohash: latitude, longitude, hierarchical
   prefixes and small-area density.
-* Geohash-level statistics (mean, std, count, rank).
+* Fold-safe geohash-level and geohash/hour statistics (mean, std, count, rank).
 * Cross-feature interactions (lanes * road type, etc.).
 * Target / out-of-fold target encoding for the high-cardinality
   ``geohash`` and a couple of low-cardinality features.
-* Day-48 demand for the same ``(geohash, timestamp)`` pair - by far the
-  strongest single feature (covers ~89% of the test set).
 """
 from __future__ import annotations
 
@@ -91,8 +89,7 @@ class FeatureBuilder:
     cat_modes_: dict[str, str] = field(default_factory=dict)
     feature_names_: list[str] = field(default_factory=list)
     target_enc_maps_: dict[str, pd.Series] = field(default_factory=dict)
-    # For day-48 lookup
-    day48_lookup_: Optional[pd.Series] = None
+    temperature_fill_value_: float = np.nan
     geohash_lat_lon_: Optional[pd.DataFrame] = None
 
     # ------------------------------------------------------------------
@@ -107,6 +104,7 @@ class FeatureBuilder:
         """
         df = train.copy()
         self.global_target_mean_ = float(df[self.target].mean())
+        self.temperature_fill_value_ = float(df["Temperature"].median()) if "Temperature" in df.columns else 0.0
 
         # Categorical modes (used to impute missing values in transform)
         for c in ["RoadType", "Weather", "LargeVehicles", "Landmarks"]:
@@ -136,10 +134,6 @@ class FeatureBuilder:
             columns=["latitude", "longitude"],
         )
         self.geohash_lat_lon_ = lat_lon
-
-        # Day-48 lookup: (geohash, timestamp) -> demand
-        d48 = df[df["day"] == 48]
-        self.day48_lookup_ = d48.set_index(["geohash", "timestamp"])[self.target]
         return self
 
     # ------------------------------------------------------------------
@@ -171,35 +165,29 @@ class FeatureBuilder:
         # ---- Geohash aggregates ----
         if self.geohash_stats_ is not None:
             join = self.geohash_stats_.reindex(out["geohash"].values)
-            for col in join.columns:
-                out[col] = join[col].values
+            out["gh_mean"] = join["gh_mean"].fillna(self.global_target_mean_).values
+            out["gh_std"] = join["gh_std"].fillna(0.0).values
+            out["gh_count"] = join["gh_count"].fillna(0.0).values
+            out["gh_median"] = join["gh_median"].fillna(self.global_target_mean_).values
+            out["gh_rank"] = join["gh_rank"].fillna(float(len(self.geohash_stats_) + 1)).values
+            out["gh_zscore"] = join["gh_zscore"].fillna(0.0).values
 
         # ---- Per (geohash, hour) aggregates ----
         if self.geohash_hour_stats_ is not None:
             gh_hour = self.geohash_hour_stats_.reindex(
                 pd.MultiIndex.from_arrays([out["geohash"].values, out["hour"].values])
             )
-            for col in gh_hour.columns:
-                out[col] = gh_hour[col].values
-
-        # ---- Day-48 demand for same (geohash, ts) ----
-        if self.day48_lookup_ is not None:
-            keys = list(zip(out["geohash"], out["timestamp"]))
-            out["demand_d48"] = [self.day48_lookup_.get(k, np.nan) for k in keys]
-            # Distance from day-48 value to per-geohash mean (a "deviation from local norm" feature)
-            out["demand_d48_dev"] = out["demand_d48"] - out["gh_mean"]
-        else:
-            out["demand_d48"] = np.nan
-            out["demand_d48_dev"] = np.nan
+            out["gh_hour_mean"] = gh_hour["gh_hour_mean"].fillna(self.global_target_mean_).values
+            out["gh_hour_count"] = gh_hour["gh_hour_count"].fillna(0.0).values
 
         # ---- Categorical imputation ----
         for c, mode in self.cat_modes_.items():
             if c in out.columns:
                 out[c] = out[c].fillna(mode)
 
-        # Temperature: impute with per-hour median (computed from train)
+        # Temperature: impute with the training median only
         if "Temperature" in out.columns:
-            out["Temperature"] = out["Temperature"].fillna(out["Temperature"].median())
+            out["Temperature"] = out["Temperature"].fillna(self.temperature_fill_value_)
 
         # ---- Interaction features ----
         out["lane_x_road"] = out["NumberofLanes"].astype(float) * (
@@ -231,6 +219,18 @@ class FeatureBuilder:
         """
         self.fit(train)
         df = train.copy()
+        engineered = self.transform(df, target_enc=None)
+
+        target_feature_cols = [
+            "gh_mean",
+            "gh_std",
+            "gh_count",
+            "gh_median",
+            "gh_rank",
+            "gh_zscore",
+            "gh_hour_mean",
+            "gh_hour_count",
+        ]
 
         # Compute OOF target encodings for the high-cardinality geohash
         te_cols = ["geohash", "RoadType", "Weather"]
@@ -242,19 +242,50 @@ class FeatureBuilder:
         oof_te = {c: np.full(len(df), self.global_target_mean_, dtype=float) for c in te_cols}
         fold_maps: dict[str, list[pd.Series]] = {c: [] for c in te_cols}
 
+        oof_stats = {
+            col: np.asarray(engineered[col], dtype=float).copy()
+            for col in target_feature_cols
+        }
+
         for fold_idx, (tr_idx, va_idx) in enumerate(folds):
             tr = df.iloc[tr_idx]
+            va = df.iloc[va_idx]
+            fold_mean = float(tr[self.target].mean())
+
+            gh_stats = tr.groupby("geohash")[self.target].agg(["mean", "std", "count", "median"])
+            gh_stats.columns = [f"gh_{c}" for c in gh_stats.columns]
+            gh_stats["gh_rank"] = gh_stats["gh_mean"].rank(method="dense", ascending=False)
+            gh_stats["gh_zscore"] = (gh_stats["gh_mean"] - gh_stats["gh_mean"].mean()) / (
+                gh_stats["gh_mean"].std() + 1e-9
+            )
+            gh_join = gh_stats.reindex(va["geohash"].values)
+            oof_stats["gh_mean"][va_idx] = gh_join["gh_mean"].fillna(fold_mean).to_numpy(dtype=float)
+            oof_stats["gh_std"][va_idx] = gh_join["gh_std"].fillna(0.0).to_numpy(dtype=float)
+            oof_stats["gh_count"][va_idx] = gh_join["gh_count"].fillna(0.0).to_numpy(dtype=float)
+            oof_stats["gh_median"][va_idx] = gh_join["gh_median"].fillna(fold_mean).to_numpy(dtype=float)
+            oof_stats["gh_rank"][va_idx] = gh_join["gh_rank"].fillna(float(len(gh_stats) + 1)).to_numpy(dtype=float)
+            oof_stats["gh_zscore"][va_idx] = gh_join["gh_zscore"].fillna(0.0).to_numpy(dtype=float)
+
+            ts_tr = _parse_timestamp(tr["timestamp"].astype(str))
+            tr_hour = tr.assign(hour=ts_tr["hour"].values)
+            gh_hour = tr_hour.groupby(["geohash", "hour"])[self.target].agg(["mean", "count"])
+            gh_hour.columns = [f"gh_hour_{c}" for c in gh_hour.columns]
+            va_hour = _parse_timestamp(va["timestamp"].astype(str))["hour"].values
+            gh_hour_join = gh_hour.reindex(pd.MultiIndex.from_arrays([va["geohash"].values, va_hour]))
+            oof_stats["gh_hour_mean"][va_idx] = gh_hour_join["gh_hour_mean"].fillna(fold_mean).to_numpy(dtype=float)
+            oof_stats["gh_hour_count"][va_idx] = gh_hour_join["gh_hour_count"].fillna(0.0).to_numpy(dtype=float)
+
             for c in te_cols:
                 if c not in tr.columns:
                     continue
                 stats = tr.groupby(c)[self.target].agg(["mean", "count"])
                 # Bayesian smoothing
                 smoothed = (
-                    (stats["mean"] * stats["count"] + self.global_target_mean_ * self.smoothing)
+                    (stats["mean"] * stats["count"] + fold_mean * self.smoothing)
                     / (stats["count"] + self.smoothing)
                 )
                 fold_maps[c].append(smoothed)
-                oof_te[c][va_idx] = df.iloc[va_idx][c].map(smoothed).fillna(self.global_target_mean_).values
+                oof_te[c][va_idx] = va[c].map(smoothed).fillna(fold_mean).values
 
         # Build full-train encodings for use at inference
         target_enc: dict[str, pd.Series] = {}
@@ -265,11 +296,13 @@ class FeatureBuilder:
                 / (full_stats["count"] + self.smoothing)
             )
             target_enc[c] = smoothed
-            # Append OOF column to df
-            df[f"te_{c}"] = oof_te[c]
             self.target_enc_maps_[c] = smoothed
 
-        engineered = self.transform(df, target_enc=target_enc)
+        for col, values in oof_stats.items():
+            engineered[col] = values
+        for c in te_cols:
+            engineered[f"te_{c}"] = oof_te[c]
+
         # Drop raw columns that are not useful for modelling
         drop = {"Index", self.target, "timestamp"}
         self.feature_names_ = [c for c in engineered.columns if c not in drop]

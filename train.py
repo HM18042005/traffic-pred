@@ -49,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trials", type=int, default=10, help="Optuna trials for CatBoost (20 quick / 100 full)")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--validation-mode",
+        choices=["groupkfold", "time"],
+        default="time",
+        help="groupkfold = day-grouped CV, time = expanding past-only validation",
+    )
     args = parser.parse_args(argv)
 
     cfg = TrainConfig(
@@ -73,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         n_folds=cfg.n_folds,
         seed=cfg.seed,
         n_optuna_trials=cfg.n_optuna_trials,
+        validation_mode=args.validation_mode,
     )
 
     # Persist feature builder target-encodings for inference / resuming
