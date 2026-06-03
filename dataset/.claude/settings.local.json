@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-Content train.csv | Measure-Object -Line; Get-Content test.csv | Measure-Object -Line; Get-Content sample_submission.csv | Measure-Object -Line\")",
+      "Bash(python -c \"import pandas as pd; print\\('Pandas:', pd.__version__\\); print\\('---TRAIN INFO---'\\); df = pd.read_csv\\('train.csv'\\); print\\(df.info\\(\\)\\); print\\('---TEST INFO---'\\); test = pd.read_csv\\('test.csv'\\); print\\(test.info\\(\\)\\); print\\('---SAMPLE SUBMISSION---'\\); ss = pd.read_csv\\('sample_submission.csv'\\); print\\(ss.info\\(\\)\\)\")",
+      "Bash(pip --version)",
+      "Bash(pip install *)",
+      "Bash(python)",
+      "Read(//c/Users/Lenovo/Downloads/e88186124ec611f1/**)",
+      "Bash(mkdir -p src outputs artifacts)",
+      "Bash(python -c \"import torch; print\\('CUDA:', torch.cuda.is_available\\(\\)\\); print\\('Device count:', torch.cuda.device_count\\(\\)\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
