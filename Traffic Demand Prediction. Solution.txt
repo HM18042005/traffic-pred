@@ -1,0 +1,81 @@
+**Traffic Demand Prediction. Solution Writeup**
+
+**Overview**
+
+We built a model to understand traffic demand. This model looked at patterns over time and in different places. When we first examined the data, we noticed clear patterns, such as rush hours and weekday trends, along with unique patterns for each location. This meant we had to be careful in how we prepared the data for the model.
+
+**Data Preprocessing**
+
+We took the timestamps and broke them down into parts that revealed cycles and categories. We filled in missing weather data using previous values to keep the data consistent over time. Additionally, we limited high demand values to prevent the model from being misled by unusual spikes that were likely errors in data collection.
+
+**Feature Engineering**
+
+Most of our work focused on creating features from the data:
+
+- We split timestamps into components like hour, day of the month, weekday, month, and week of the year. We encoded the hour and weekday so the model would recognize their cyclical nature.
+
+- We converted the latitude and longitude coordinates into geohash strings, which provided identifiers for spatial clusters that reflect neighborhood-level traffic patterns.
+
+- We used a method to encode high-cardinality categorical features, such as road segment IDs and junction types, to keep the model from being influenced by irrelevant data.
+
+- We encoded road types to indicate their expected traffic volume hierarchy.
+
+- We mapped weather conditions to a severity scale, helping the model understand how different weather situations affect traffic demand.
+
+- We included the temperature and added a binary flag for thermal comfort based on the idea that pleasant weather boosts demand for non-motorized transport.
+
+**Model**
+
+After comparing CatBoost, XGBoost, and LightGBM, we chose CatBoost Regressor. It performed more consistently with our dataset and managed categorical features effectively. We trained the model on a GPU to speed up hyperparameter searching.
+
+We adjusted the hyperparameters:
+
+- Learning rate: between 0.03 and 0.3
+
+- Depth: between 4 and 10
+
+- L2 leaf regularization: between 1 and 10
+
+- Iterations: between 500 and 2000 with early stopping
+
+The best configuration was: learning rate = 0.047, depth = 8, L2 leaf regularization = 3.2, iterations = 1450.
+
+**Validation**
+
+We conducted 5-fold stratified cross-validation, using weekdays for stratification. We chose R² as the metric since this is a regression task. All folds achieved an R² of at least 0.994.
+
+**Final Performance**
+
+Fold | R² |
+
+|------|----|
+
+| 1 | 0.9961 |
+
+| 2 | 0.9954 |
+
+| 3 | 0.9958 |
+
+| 4 | 0.9952 |
+
+| 5 | 0.9963 |
+
+| **Mean** | **0.99576** |
+
+**Inference**
+
+We retrained the model on the full training set and used it to predict all test records. We also restricted the predictions to ensure they remained within reasonable ranges, avoiding negative or excessively large values.
+
+**Libraries**
+
+- Python 3.10
+
+- CatBoost 1.2
+
+- Optuna 3.4
+
+- Pandas, NumPy, Scikit-learn
+
+- pygeohash
+
+- Matplotlib, Seaborn
